@@ -9,6 +9,9 @@ from tastypie.utils.urls import trailing_slash
 from tastypie.validation import Validation
 from tastypie.resources import ModelDeclarativeMetaclass
 
+import logging
+log = logging.getLogger()
+
 
 class ModeledValidator(Validation):
     def is_valid(self, bundle, request=None):
@@ -135,7 +138,7 @@ class ModeledResource(resources.Resource):
             url(r"^(?P<resource_name>%s)/schema%s$" % (self._meta.resource_name, trailing_slash()), self.wrap_view('get_schema'), name="api_get_schema"),
             #This will take into account the link_field attribute.
             url(r"^(?P<resource_name>%s)/(?P<%s>\w[\w/-]*)%s$" % (self._meta.resource_name, self._lookup_field(), trailing_slash()), self.wrap_view('dispatch_detail'), name="api_dispatch_detail"),
-            ]
+        ]
 
     def get_object_list(self, request):
         pass
@@ -143,13 +146,14 @@ class ModeledResource(resources.Resource):
 
     def obj_get_list(self, request=None, **kwargs):
         # Filtering disabled for brevity...
+        log.debug('OBJECT LIST')
         return self._collection().find(kwargs)
 
     def obj_get(self, request=None, **kwargs):
         return self._collection().find_one(kwargs)
 
     def obj_create(self, bundle, request=None, **kwargs):
-        print bundle
+        log.debug('OBJECT CREATE')
         bundle.obj = RiakObject(initial=kwargs)
         bundle = self.full_hydrate(bundle)
         bucket = self._bucket()

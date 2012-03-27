@@ -1,5 +1,0 @@
-HTTP/1.0 200 OK
-Date: Sun, 19 Feb 2012 20:29:12 GMT
-Server: WSGIServer/0.1 Python/2.7.1
-Content-Type: application/json; charset=utf-8
-

@@ -13,6 +13,7 @@ from django.core.validators import BaseValidator
 
 class NotSpecified(object): pass
 
+EMPTY_VALUES = (None, '', [], (), {}, NotSpecified)
 
 class TypeValidator(BaseValidator):
     compare = lambda self, a, b: not isinstance(a, b)
@@ -21,7 +22,7 @@ class TypeValidator(BaseValidator):
 
 
 def validate_required(value):
-    if value in validators.EMPTY_VALUES:
+    if value in EMPTY_VALUES:
         raise ValidationError(_(u'This field is required.'), code='required')
 
 
@@ -32,7 +33,8 @@ class Data(object):
     default_validators = [] # Default set of validators
     creation_counter = 0
 
-    def __init__(self, name=None, default=None, verbose=None, readonly=False, unique=False, required=True, help_text=None, validators=None, error_messages=None, **kwargs):
+    def __init__(self, name=None, default=None, verbose=None, readonly=False, unique=False, required=True,
+                 help_text=None, validators=None, error_messages=None, **kwargs):
         validators = validators or []
         self.name = name
         self.readonly = readonly
@@ -47,8 +49,7 @@ class Data(object):
         self.creation_counter = Data.creation_counter
         Data.creation_counter += 1
 
-        #Error on impossible combinations
-        if self.required and self.readonly:
+        if readonly is True:
             self.required = False
 
         #Validate the field flags.
@@ -58,13 +59,20 @@ class Data(object):
         self.validators = self.default_validators + validators
 
     def clean(self, value, data):
-        #:TODO: You're having trouble reconciling NotSpecified with the clean and validation methods. Some fields clean everything completely, but it's hard to know when something hasn't been specified. Consider adding another structure or making data available everywhere.
+        #:TODO: You're having trouble reconciling NotSpecified with the clean and validation methods. Some fields
+        # clean everything completely, but it's hard to know when something hasn't been specified. Consider adding
+        # another structure or making data available everywhere.
         self.orig_value = value
         if value is NotSpecified and self.default is not None:
             value = self.default
             if callable(self.default):
                 value = self.default()
         return value
+
+#    def default(self, value, data):
+#        if callable(self.default):
+#            return self.default()
+#        return self.default
 
     def validate(self, value):
         errors = []
@@ -105,7 +113,7 @@ class CharData(Data):
 
     def clean(self, value, data):
         value = super(CharData, self).clean(value, data)
-        if value in validators.EMPTY_VALUES:
+        if value in EMPTY_VALUES:
             return u''
         return smart_unicode(value)
 
@@ -140,7 +148,7 @@ class FloatData(IntegerData):
     def clean(self, value, data):
         value = super(FloatData, self).clean(value, data)
 
-        if value in validators.EMPTY_VALUES:
+        if value in EMPTY_VALUES:
             return None
 
         try:
@@ -162,7 +170,7 @@ class SlugData(CharData):
 
     def clean(self, value, data):
         value = super(SlugData, self).clean(value, data)
-        print type(value), NotSpecified, type(value) == NotSpecified
+        print '**', type(value), NotSpecified, type(value) == NotSpecified
         if value is NotSpecified and self.default_from:
             value = self.slugify(data[self.default_from])
         return value
@@ -227,7 +235,7 @@ class DateData(BaseTemporalData):
         Validates that the input can be converted to a date. Returns a Python
         datetime.date object.
         """
-        if value in validators.EMPTY_VALUES:
+        if value in EMPTY_VALUES:
             return None
         if isinstance(value, datetime.datetime):
             return value.date()
@@ -249,7 +257,7 @@ class TimeData(BaseTemporalData):
         Validates that the input can be converted to a time. Returns a Python
         datetime.time object.
         """
-        if value in validators.EMPTY_VALUES:
+        if value in EMPTY_VALUES:
             return None
         if isinstance(value, datetime.time):
             return value
@@ -274,7 +282,7 @@ class DateTimeData(BaseTemporalData):
         Validates that the input can be converted to a datetime. Returns a
         Python datetime.datetime object.
         """
-        if value in validators.EMPTY_VALUES:
+        if value in EMPTY_VALUES:
             return None
         if isinstance(value, datetime.datetime):
             return from_current_timezone(value)
@@ -286,7 +294,7 @@ class DateTimeData(BaseTemporalData):
             # components: date and time.
             if len(value) != 2:
                 raise ValidationError(self.error_messages['invalid'])
-            if value[0] in validators.EMPTY_VALUES and value[1] in validators.EMPTY_VALUES:
+            if value[0] in EMPTY_VALUES and value[1] in EMPTY_VALUES:
                 return None
             value = '%s %s' % tuple(value)
         result = super(DateTimeData, self).clean(value, data)
@@ -332,16 +340,56 @@ class DeclarativeDataMetaclass(type):
         return new_class
 
 class BaseDataModel(object):
-    def validate(self, data):
+    def validate(self, data, for_update=False, strict=False):
+        """
+        Responsible for doing required and read-only validation and knowing the difference between an
+        update validation and an insert validation.
+
+        | update | specified | default | required | what
+        |   Y    |     N     |    N    |     N    | SKIP
+        |   Y    |     N     |    N    |     Y    |
+        |   Y    |     N     |    Y    |     N    |
+        |   Y    |     N     |    Y    |     Y    |
+        |   Y    |     Y     |    N    |     N    | USE
+        |   Y    |     Y     |    N    |     Y    | USE
+        |   Y    |     Y     |    Y    |     N    | USE
+        |   Y    |     Y     |    Y    |     Y    | USE
+        |   N    |     N     |    N    |     N    | SKIP
+        |   N    |     N     |    N    |     Y    | ERROR
+        |   N    |     N     |    Y    |     N    | DEFAULT
+        |   N    |     N     |    Y    |     Y    | DEFAULT
+        |   N    |     Y     |    N    |     N    | USE
+        |   N    |     Y     |    N    |     Y    | USE
+        |   N    |     Y     |    Y    |     N    | USE
+        |   N    |     Y     |    Y    |     Y    | USE
+
+
+        """
         #If there are name overrides this will fail.
+        data = data.copy()
         cleaned_data = {}
         errors = {}
-        for attr, f in self.base_fields.items():
+
+        #Iterate over fields consuming our data as we go.
+        for k, field in self.base_fields.items():
+            v = data.pop(k, NotSpecified)
+
+            #If there is no data and this is an update, skip.
+            if v is NotSpecified and for_update is True:
+                continue
+
             try:
-                cleaned_data[attr] = f.clean(data.get(attr, NotSpecified), data)
-                f.validate(cleaned_data[attr])
+                if v is NotSpecified and for_update is False:
+                    cleaned_data[k] = field.default(v, data)
+                else:
+                    cleaned_data[k] = field.clean(v, data)
             except ValidationError as e:
-                errors[attr] = e.messages
+                errors[k] = e.messages
+
+        #If data wasn't totally consumed in strict mode this is an error.
+        if strict is True and data:
+            errors['__all__'] = _(u'Fields %s were refused' % unicode(data.keys()))
+
         if errors:
             raise ValidationError(errors)
         return cleaned_data

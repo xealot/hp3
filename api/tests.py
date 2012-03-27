@@ -6,11 +6,18 @@ Replace this with more appropriate tests for your application.
 """
 
 from django.test import TestCase
+from data import *
+
+class TestModel(DataModel):
+    name = CharData(max_length=50, min_length=2)
+    slug = SlugData(default_from='name', readonly=True)
+    domains = ListData(min_length=1)
+    priority = IntegerData(default=10)
+    enabled = BooleanData(default=True)
 
 
-class SimpleTest(TestCase):
-    def test_basic_addition(self):
-        """
-        Tests that 1 + 1 always equals 2.
-        """
-        self.assertEqual(1 + 1, 2)
+class ResourceTest(TestCase):
+    def test_fields(self):
+        tm = TestModel()
+        print tm.validate({'name': 'test'})
+        #print tm
