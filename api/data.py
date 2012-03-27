@@ -347,9 +347,9 @@ class BaseDataModel(object):
 
         | update | specified | default | required | what
         |   Y    |     N     |    N    |     N    | SKIP
-        |   Y    |     N     |    N    |     Y    |
-        |   Y    |     N     |    Y    |     N    |
-        |   Y    |     N     |    Y    |     Y    |
+        |   Y    |     N     |    N    |     Y    | SKIP
+        |   Y    |     N     |    Y    |     N    | SKIP
+        |   Y    |     N     |    Y    |     Y    | SKIP
         |   Y    |     Y     |    N    |     N    | USE
         |   Y    |     Y     |    N    |     Y    | USE
         |   Y    |     Y     |    Y    |     N    | USE
