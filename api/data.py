@@ -1,6 +1,7 @@
 import datetime
-import copy
 import re
+from functools import wraps, partial
+#from decorator import decorator
 from django.core import validators
 from django.core.exceptions import ValidationError
 from django.forms.util import to_current_timezone, from_current_timezone
@@ -11,9 +12,20 @@ from django.utils.translation import ugettext_lazy as _
 from django.core.validators import BaseValidator
 
 
-class NotSpecified(object): pass
+notspecified = object()
 
-EMPTY_VALUES = (None, '', [], (), {}, NotSpecified)
+EMPTY_VALUES = (None, '', [], (), {})
+
+def validate(model, strict=False):
+    def wrapper(f):
+        @wraps(f)
+        def inner(*a, **kw):
+            return f(*a, **kw)
+
+        inner.contract = model
+
+        return inner
+    return wrapper
 
 class TypeValidator(BaseValidator):
     compare = lambda self, a, b: not isinstance(a, b)
@@ -53,38 +65,40 @@ class Data(object):
             self.required = False
 
         #Validate the field flags.
-        if self.required:
-            validators.append(validate_required)
+        #if self.required:
+        #    validators.append(validate_required)
+
+        messages = {}
+        for c in reversed(self.__class__.__mro__):
+            messages.update(getattr(c, 'default_error_messages', {}))
+        messages.update(error_messages or {})
+        self.error_messages = messages
 
         self.validators = self.default_validators + validators
 
-    def clean(self, value, data):
-        #:TODO: You're having trouble reconciling NotSpecified with the clean and validation methods. Some fields
-        # clean everything completely, but it's hard to know when something hasn't been specified. Consider adding
-        # another structure or making data available everywhere.
-        self.orig_value = value
-        if value is NotSpecified and self.default is not None:
-            value = self.default
-            if callable(self.default):
-                value = self.default()
-        return value
+    def set(self, value, data=None, model=None):
+        self.value = value
+        if data is not None:
+            self.data = data
+        if model is not None:
+            self.model = model
 
-#    def default(self, value, data):
-#        if callable(self.default):
-#            return self.default()
-#        return self.default
+    def clean(self):
+        return self.value
 
-    def validate(self, value):
+    def get_default(self):
+        if callable(self.default):
+            return self.default()
+        return self.default
+
+    def validate(self):
         errors = []
 
-        #WOuld love to do this in a validator but we need the original value here.
-        if self.readonly:
-            if self.orig_value is not NotSpecified:
-                errors.append(_(u'This field is readonly.'))
+
 
         for v in self.validators:
             try:
-                v(value)
+                v(self.value)
             except ValidationError as e:
                 if hasattr(e, 'code') and e.code in self.error_messages:
                     message = self.error_messages[e.code]
@@ -111,8 +125,8 @@ class CharData(Data):
         if max_length is not None:
             self.validators.append(validators.MaxLengthValidator(max_length))
 
-    def clean(self, value, data):
-        value = super(CharData, self).clean(value, data)
+    def clean(self):
+        value = super(CharData, self).clean()
         if value in EMPTY_VALUES:
             return u''
         return smart_unicode(value)
@@ -132,8 +146,8 @@ class IntegerData(Data):
         if min_value is not None:
             self.validators.append(validators.MinValueValidator(min_value))
 
-    def clean(self, value, data):
-        value = super(IntegerData, self).clean(value, data)
+    def clean(self):
+        value = super(IntegerData, self).clean()
         try:
             value = int(str(value))
         except (ValueError, TypeError):
@@ -145,8 +159,8 @@ class FloatData(IntegerData):
         'invalid': _(u'Enter a number.'),
     }
 
-    def clean(self, value, data):
-        value = super(FloatData, self).clean(value, data)
+    def clean(self):
+        value = self.value #No super here, because it would convert it to an int.
 
         if value in EMPTY_VALUES:
             return None
@@ -165,17 +179,17 @@ class SlugData(CharData):
     default_validators = [validators.validate_slug]
 
     def __init__(self, default_from=None, **kwargs):
-        self.default_from = default_from
+        if default_from is not None:
+            kwargs['default'] = partial(self.build, default_from)
         super(SlugData, self).__init__(**kwargs)
 
-    def clean(self, value, data):
-        value = super(SlugData, self).clean(value, data)
-        print '**', type(value), NotSpecified, type(value) == NotSpecified
-        if value is NotSpecified and self.default_from:
-            value = self.slugify(data[self.default_from])
-        return value
+    def build(self, key):
+        if key not in self.data:
+            raise ValidationError(_(u'Cannot build slug from %s' % key))
+        return self.slugify(self.data.get(key))
 
-    def slugify(self, value):
+    @staticmethod
+    def slugify(value):
         return unicode(
             re.sub('[^\w\s-]', '', value).strip().lower().replace(" ", "-")
         )
@@ -199,7 +213,8 @@ class BaseTemporalData(Data):
     def strptime(self, value, format):
         raise NotImplementedError()
 
-    def clean(self, value, data):
+    def clean(self):
+        value = super(BaseTemporalData, self).clean()
         # Try to coerce the value to unicode.
         unicode_value = force_unicode(value, strings_only=True)
         if isinstance(unicode_value, unicode):
@@ -230,18 +245,19 @@ class DateData(BaseTemporalData):
         'invalid': _(u'Enter a valid date.'),
         }
 
-    def clean(self, value, data):
+    def clean(self):
         """
         Validates that the input can be converted to a date. Returns a Python
         datetime.date object.
         """
+        value = self.value
         if value in EMPTY_VALUES:
             return None
         if isinstance(value, datetime.datetime):
             return value.date()
         if isinstance(value, datetime.date):
             return value
-        return super(DateData, self).clean(value, data)
+        return super(DateData, self).clean()
 
     def strptime(self, value, format):
         return datetime.datetime.strptime(value, format).date()
@@ -252,16 +268,17 @@ class TimeData(BaseTemporalData):
         'invalid': _(u'Enter a valid time.')
     }
 
-    def clean(self, value, data):
+    def clean(self):
         """
         Validates that the input can be converted to a time. Returns a Python
         datetime.time object.
         """
+        value = self.value
         if value in EMPTY_VALUES:
             return None
         if isinstance(value, datetime.time):
             return value
-        return super(TimeData, self).clean(value, data)
+        return super(TimeData, self).clean()
 
     def strptime(self, value, format):
         return datetime.datetime.strptime(value, format).time()
@@ -277,11 +294,12 @@ class DateTimeData(BaseTemporalData):
 #            value = to_current_timezone(value)
 #        return value
 
-    def clean(self, value, data):
+    def clean(self):
         """
         Validates that the input can be converted to a datetime. Returns a
         Python datetime.datetime object.
         """
+        value = self.value
         if value in EMPTY_VALUES:
             return None
         if isinstance(value, datetime.datetime):
@@ -297,7 +315,7 @@ class DateTimeData(BaseTemporalData):
             if value[0] in EMPTY_VALUES and value[1] in EMPTY_VALUES:
                 return None
             value = '%s %s' % tuple(value)
-        result = super(DateTimeData, self).clean(value, data)
+        result = super(DateTimeData, self).clean()
         return from_current_timezone(result)
 
     def strptime(self, value, format):
@@ -309,12 +327,12 @@ class EmailData(CharData):
     }
     default_validators = [validators.validate_email]
 
-    def clean(self, value, data):
-        return super(EmailData, self).clean(value, data).strip()
+    def clean(self):
+        return super(EmailData, self).clean().strip()
 
 class BooleanData(Data):
-    def clean(self, value, data):
-        value = super(BooleanData, self).clean(value, data)
+    def clean(self):
+        value = super(BooleanData, self).clean()
         if isinstance(value, basestring) and value.lower() in ('false', '0'):
             value = False
         value = bool(value)
@@ -340,8 +358,19 @@ class DeclarativeDataMetaclass(type):
         return new_class
 
 class BaseDataModel(object):
+    def __init__(self, form_data=None):
+        """
+        An init might feel better to populate data.
+        This will also prevent the accidental reuse of bound fields.
+        """
+        #for k, field in self.base_fields.items():
+        #    if k in form_data:
+        #        field.set(form_data[k], form_data, self)
+
     def validate(self, data, for_update=False, strict=False):
         """
+        :TODO: This function has a lot of things from the pre set() addition. Such as passing value,data into everything
+
         Responsible for doing required and read-only validation and knowing the difference between an
         update validation and an insert validation.
 
@@ -362,32 +391,42 @@ class BaseDataModel(object):
         |   N    |     Y     |    N    |     Y    | USE
         |   N    |     Y     |    Y    |     N    | USE
         |   N    |     Y     |    Y    |     Y    | USE
-
-
         """
         #If there are name overrides this will fail.
-        data = data.copy()
+        d = data.copy()
         cleaned_data = {}
         errors = {}
 
         #Iterate over fields consuming our data as we go.
         for k, field in self.base_fields.items():
-            v = data.pop(k, NotSpecified)
+            v = d.pop(k, notspecified)
 
-            #If there is no data and this is an update, skip.
-            if v is NotSpecified and for_update is True:
+            field.set(v, data, self)
+
+            #If there is no data and this is an update or there is no default and not required, skip.
+            if v is notspecified and (for_update is True or (field.required is False and field.default is None)):
                 continue
 
             try:
-                if v is NotSpecified and for_update is False:
-                    cleaned_data[k] = field.default(v, data)
-                else:
-                    cleaned_data[k] = field.clean(v, data)
+                if field.readonly is True and v is not notspecified:
+                    raise ValidationError(_(u'This field\'s readonly.'))
+
+                #We do some default/require processing here because the output changes based on if a value was specified.
+                if v is notspecified:
+                    if field.default is not None:
+                        field.set(field.get_default())
+                    elif field.required is True:
+                        raise ValidationError(_(u'This field is required.'), code='required')
+
+                field.set(field.clean()) #This does more than just clean the value, it makes the internal state right.
+                field.validate()
+
+                cleaned_data[k] = field.value
             except ValidationError as e:
                 errors[k] = e.messages
 
         #If data wasn't totally consumed in strict mode this is an error.
-        if strict is True and data:
+        if strict is True and d:
             errors['__all__'] = _(u'Fields %s were refused' % unicode(data.keys()))
 
         if errors:

@@ -33,7 +33,7 @@ class ModeledResource(resources.Resource):
         return self._db()[self._meta.resource_name]
 
     def _lookup_field(self):
-        return getattr(self._meta, 'link_field', '_id')
+        return getattr(self._meta, 'lookup_field', '_id')
 
     @classmethod
     def api_field_from_datamodel(cls, f, default=fields.CharField):
@@ -101,7 +101,7 @@ class ModeledResource(resources.Resource):
             kwargs = {
                 'attribute': f.name,
                 'help_text': f.help_text,
-                'default': f.default.__name__ if callable(f.default) else f.default,
+                #'default': f.default.__name__ if callable(f.default) else f.default,
                 'unique': True if f.unique else False,
                 'readonly': True if f.readonly else False
             }

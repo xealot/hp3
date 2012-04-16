@@ -1,32 +1,43 @@
+from urllib import urlencode
+from api.work.responses import NotAllowed
 from django.conf.urls import patterns, include, url
-from tastypie.api import Api
-from tastypie.authorization import Authorization
 
-from resources import ModeledResource, ModeledValidator
-from data import *
+from work.talker import Endpoint, API
+from work.middleware import critical_middleware
 
-class SystemModel(DataModel):
-    name = CharData(max_length=50, min_length=2)
-    slug = SlugData(default_from='name', readonly=True)
-    domains = ListData(min_length=1)
-    priority = IntegerData(default=10)
-    enabled = BooleanData(default=True)
+class T1(Endpoint):
+    #Not Implemented Test
+    pass
 
-class SystemResource(ModeledResource):
-    #:TODO: Security around removing system entries.
+class T2(Endpoint):
+    #Echo Test
+    def detail_get(self, request, id, *args, **kwargs):
+        """Fetch the particular object"""
+        return id
 
-    class Meta:
-        resource_name = 'system'
-        link_field = 'slug'
-        object_class = SystemModel
-        authorization = Authorization()
-        validation = ModeledValidator()
+    def detail_put(self, request, id, *args, **kwargs):
+        """Create/Replace a new entity at this location"""
+        raise NotAllowed()
 
+    def detail_patch(self, request, id, *args, **kwargs):
+        """Partially update a record at this location"""
+        raise NotAllowed()
 
-v1_api = Api(api_name='v1')
-#v1_api.register(UserResource())
-v1_api.register(SystemResource())
+    def detail_delete(self, request, id, *args, **kwargs):
+        """Delete an entity at this location"""
+        raise NotAllowed()
+
+    def list_get(self, request, *args, **kwargs):
+        return urlencode(request.GET)
+
+    def list_post(self, request, *args, **kwargs):
+        return request.data
+
+    def list_put(self, request, *args, **kwargs):
+        return request.data
+
 
 urlpatterns = patterns('',
-    url(r'', include(v1_api.urls)),
+    url(r't1', include(T1(critical_middleware).urls)),
+    url(r't2', include(T2(critical_middleware).urls)),
 )
