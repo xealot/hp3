@@ -170,11 +170,12 @@ class EndpointTest(TestCase):
         self.c = Client()
 
     def test_routing(self):
-        self.assertEqual(self.c.get('/t1/').status_code, 501)
-        #self.assertEqual(self.c.post('/t1/', {1:2}).status_code, 501)
-        #self.assertEqual(self.c.delete('/t1/').status_code, 501)
-        #self.assertEqual(self.c.options('/t1/').status_code, 501)
-        #self.assertEqual(self.c.patch('/t1/').status_code, 501)
+        self.assertEqual(self.c.get('/t1/').status_code, 200)
+        self.assertEqual(self.c.post('/t1/', {1:2}).status_code, 405)
+        self.assertEqual(self.c.delete('/t1/').content, 405)
+        self.assertEqual(self.c.delete('/t1/').status_code, 405)
+        self.assertEqual(self.c.options('/t1/').status_code, 405)
+        self.assertEqual(self.c.patch('/t1/').status_code, 405)
 
     def test_echo(self):
         self.assertEqual(self.c.get('/t2/').content, '{\n  "hello": true\n}')
@@ -218,6 +219,7 @@ class EndpointTest(TestCase):
         #print r.status_code
 
     def test_validation(self):
+        print self.c.get('/t3/', {'id': 302}).status_code
         print self.c.get('/t3/', {'id': 302}).content
 
 

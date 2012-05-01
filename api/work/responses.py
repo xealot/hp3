@@ -12,7 +12,7 @@ __author__ = 'trey'
 def create_response(payload, status, headers):
     response = HttpResponse('', status=status)
     response.payload = payload
-    for k,v in headers.values():
+    for k,v in headers.items():
         response[k] = v
     return response
 
@@ -98,3 +98,7 @@ class NotAllowed(APIException):
     #:TODO: must have allow header.
     status = 405
     message = _(u'This method is not allowed here.')
+
+    def __init__(self, permitted_methods):
+        super(NotAllowed, self).__init__()
+        self.headers['Allow'] = ', '.join(permitted_methods)

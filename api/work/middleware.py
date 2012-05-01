@@ -56,22 +56,29 @@ class RequestVERBHelperMiddleware(object):
 
 
 class ContentSerializationMiddleware(object):
-    content_types = {
+    input_types = {
+        'application/json': 'json'
+    }
+    output_types = {
         'application/json': 'json',
         'text/javascript': 'jsonp',
     }
 
     def process_request(self, request):
-        no_ops = ('multipart/form-data', 'application/x-www-form-urlencoded')
-        declared_type = request.META.get('CONTENT_TYPE', 'application/x-www-form-urlencoded')
+        if not len(request.body): #If there is no payload, then don't process it.
+            request.data = {}
+            return None
 
-        if declared_type.split(';')[0] not in no_ops and len(request.body) > 0:
-            #Requires some deserialization.
-            format = self.determine_format(request)
+        declared_type = request.META.get('CONTENT_TYPE', 'application/json').split(';')[0]
 
-            request.data = getattr(self, "from_%s" % format)(request.body)
-        else:
-            request.data = request.POST #Just leverage django's request processing
+        if declared_type not in self.input_types:
+            raise Exception(_(u'The type %s is not supported.' % declared_type))
+
+        #Requires some deserialization.
+        format = self.determine_format(request)
+
+        request.data = getattr(self, "from_%s" % format)(request.body)
+        print request.data
 
     def process_response(self, request, response):
         """
@@ -96,8 +103,8 @@ class ContentSerializationMiddleware(object):
     #    pass
 
     def __init__(self, translator=translator):
-        self.formats = set(self.content_types.values())
-        self.types = self.content_types.keys()
+        self.formats = set(self.output_types.values())
+        self.types = self.output_types.keys()
         self.translator = translator() if callable(translator) else translator
 
     def get_json_encoder(self):
@@ -116,7 +123,7 @@ class ContentSerializationMiddleware(object):
             try:
                 best_format = mimeparse.best_match(reversed(self.types), request.META['HTTP_ACCEPT'])
                 if best_format:
-                    return self.content_types[best_format]
+                    return self.output_types[best_format]
             except ValueError as e:
                 #Invalid ACCEPT header.
                 pass

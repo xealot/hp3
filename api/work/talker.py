@@ -91,12 +91,6 @@ class API(object):
 
 class Endpoint(object):
     """
-    Views are broken down into list, detail and special versions. All functions in this class follow the
-    convention of <VERB>_<TYPE>.
-
-    A GET request on the list url (/resource_name/) will invoke get_list.
-    A GET request on the detail url (/resource_name/302/) will invoke get_detail.
-
     This class also provides callbacks to handle serialization of special objects. These methods will
     begin with serialize and end with the classname of the object to be serialized. (e.g. serialize_datetime)
 
@@ -106,19 +100,33 @@ class Endpoint(object):
     3) It can raise an exception, which will be presented to the client in the correct fashion.
 
     """
-    def __init__(self, middleware=()):
-        self.install_middleware(middleware)
+    http_method_names = ['get', 'post', 'put', 'delete', 'options']
 
-    def install_middleware(self, middleware):
-        self.middleware = load_middleware(middleware or ())
+    parameter_mask = "\w\d-"
+    params = ()
+    middleware = ()
+
+    def __init__(self, params=(), middleware=()):
+        if params:
+            self.params = params
+        if middleware:
+            self.middleware = middleware
+
+    def install_middleware(self):
+        if not hasattr(self, '_middleware'):
+            self._middleware = load_middleware(self.middleware)
 
     def base_urls(self):
         s = '/?' if API_ALLOW_MISSING_SLASH else '/'
 
-        return [
-            url(r"^%s$" % s, self.wrap_view(partial(self.dispatch, 'list')), name="api_dispatch_list"),
-            url(r"^/(?P<id>[\w\d-]*)%s$" % s, self.wrap_view(partial(self.dispatch, 'detail')), name="api_dispatch_detail"),
+        pattern = ''
+        if self.params:
+            pattern = '/' + '/'.join(['(?P<%s>[%s]*)' % (param, self.parameter_mask) for param in self.params])
 
+        return [
+            url(r"^%s%s$" % (pattern, s), self.dispatch, name="api_dispatch"),
+
+            #url(r"^/(?P<id>[\w\d-]*)%s$" % s, self.wrap_view(partial(self.dispatch, 'detail')), name="api_dispatch_detail"),
             #url(r"^(?P<resource_name>%s)%s$" % (self._meta.resource_name, s), self.wrap_view('dispatch_list'), name="api_dispatch_list"),
             #url(r"^(?P<resource_name>%s)/schema%s$" % (self._meta.resource_name, s), self.wrap_view('get_schema'), name="api_get_schema"),
             #url(r"^(?P<resource_name>%s)/set/(?P<pk_list>\w[\w/;-]*)/$" % self._meta.resource_name, self.wrap_view('get_multiple'), name="api_get_multiple"),
@@ -126,98 +134,135 @@ class Endpoint(object):
         ]
 
     def override_urls(self):
-        """
-        A hook for adding your own URLs or overriding the default URLs.
-        """
         return []
 
     @property
     def urls(self):
-        """
-        The endpoints this ``Resource`` responds to.
-
-        Mostly a standard URLconf, this is suitable for either automatic use
-        when registered with an ``Api`` class or for including directly in
-        a URLconf should you choose to.
-        """
         return patterns('', *(self.override_urls() + self.base_urls()))
 
-    def dispatch(self, request_type, request, **kwargs):
-        """
-        Take the request from the endpoint class and dispatch it to the appropriate data
-        method.
-        """
-        request_method = request.method.lower()
-        method = getattr(self, "%s_%s" % (request_type, request_method), None)
+    @csrf_exempt
+    def dispatch(self, request, *args, **kwargs):
+        self.install_middleware()
 
-        if method is None:
-            raise HttpNotImplemented(
-                _(u'A "%s" request to a "%s" endpoint is not implemented.' % (request_method, request_type))
-            )
+        try:
+            request_method = request.method.lower()
+            if request_method not in self.http_method_names:
+                raise NotAllowed(self.http_method_names)
 
-        response = None
-        for middleware_method in self.middleware['view']:
-            response = middleware_method(request, method, kwargs)
-            if response:
-                break
+            method = getattr(self, request_method, None)
+            if method is None:
+                raise HttpNotImplemented(
+                    _(u'The "%s" method is not implemented.' % request_method)
+                )
 
-        if response is None:
-            response = method(request, **kwargs)
+            #Request middleware
+            response = None
+            for middleware_method in self._middleware['request']:
+                response = middleware_method(request)
+                if response:
+                    break
 
-        if response is None:
-            return HttpResponse(status=201) #No Content
+            if response is None:
+                try:
+                    for middleware_method in self._middleware['view']:
+                        response = middleware_method(request, method, kwargs)
+                        if response:
+                            break
+
+                    if response is None:
+                        response = method(request, *args, **kwargs)
+
+                    if response is None:
+                        return HttpResponse(status=201) #No Content
+
+                except Exception as e:
+                    for middleware_method in self._middleware['exception']:
+                        response = middleware_method(request, e)
+                        if response:
+                            break
+                    if response is None:
+                        raise
+
+            # Normalize response from view_func based on known response types.
+            # Responses from view functions should be and HTTPResponse, APIResponse
+            # or a bare response which will be wrapped in an APIResponse
+            if isinstance(response, APIResponse):
+                response = response()
+            elif not isinstance(response, HttpResponse):
+                response = APIOK(response)() #Just received a raw value...
+        except APIException as e:
+            response = e()
+        except Exception as e:
+            #if settings.DEBUG and not API_HANDLE_EXCEPTIONS:
+            #    raise
+            response = PlainException(e)()
+            #return self._handle_500(request, e)
+
+        try:
+            for middleware_method in self._middleware['response']:
+                response = middleware_method(request, response)
+        except Exception as e:
+            response = HttpResponse(str(e))
+
         return response
 
-    def wrap_view(self, view_func):
-        """
-        All of the WORK happens here. The flow through the serizlizer, the middlewares and the response and exception
-        handling.
-        """
-        @csrf_exempt
-        def wrapper(request, **kwargs):
-            try:
-                #Request middleware
-                response = None
-                for middleware_method in self.middleware['request']:
-                    response = middleware_method(request)
-                    if response:
-                        break
 
-                if response is None:
-                    try:
-                        response = view_func(request, **kwargs)
-                    except Exception as e:
-                        for middleware_method in self.middleware['exception']:
-                            response = middleware_method(request, e)
-                            if response:
-                                break
-                        if response is None:
-                            raise
+#    def wrap_view(self, view_func):
+#        """
+#        All of the WORK happens here. The flow through the serizlizer, the middlewares and the response and exception
+#        handling.
+#        """
+#        @csrf_exempt
+#        def wrapper(request, **kwargs):
+#            self.install_middleware()
+#
+#            try:
+#                #Request middleware
+#                response = None
+#                for middleware_method in self._middleware['request']:
+#                    response = middleware_method(request)
+#                    if response:
+#                        break
+#
+#                if response is None:
+#                    try:
+#                        response = view_func(request, **kwargs)
+#                    except Exception as e:
+#                        for middleware_method in self._middleware['exception']:
+#                            response = middleware_method(request, e)
+#                            if response:
+#                                break
+#                        if response is None:
+#                            raise
+#
+#                # Normalize response from view_func based on known response types.
+#                # Responses from view functions should be and HTTPResponse, APIResponse
+#                # or a bare response which will be wrapped in an APIResponse
+#                if isinstance(response, APIResponse):
+#                    response = response()
+#                elif not isinstance(response, HttpResponse):
+#                    response = APIOK(response)() #Just received a raw value...
+#            except APIException as e:
+#                response = e()
+#            except Exception as e:
+#                #if settings.DEBUG and not API_HANDLE_EXCEPTIONS:
+#                #    raise
+#                response = PlainException(e)()
+#                #return self._handle_500(request, e)
+#
+#            try:
+#                for middleware_method in self._middleware['response']:
+#                    response = middleware_method(request, response)
+#            except Exception as e:
+#                response = HttpResponse(str(e))
+#
+#            return response
+#
+#        return wrapper
 
-                # Normalize response from view_func based on known response types.
-                # Responses from view functions should be and HTTPResponse, APIResponse
-                # or a bare response which will be wrapped in an APIResponse
-                if isinstance(response, APIResponse):
-                    response = response()
-                elif not isinstance(response, HttpResponse):
-                    response = APIOK(response)() #Just received a raw value...
-            except APIException as e:
-                response = e()
-            except Exception as e:
-                #if settings.DEBUG and not API_HANDLE_EXCEPTIONS:
-                #    raise
-                response = PlainException(e)()
-                #return self._handle_500(request, e)
 
-            try:
-                for middleware_method in self.middleware['response']:
-                    response = middleware_method(request, response)
-            except Exception as e:
-                response = HttpResponse(str(e))
-
-            return response
-
-        return wrapper
+class DetailEndpoint(Endpoint):
+    params = ('id',)
 
 
 class DataReference(object):
